@@ -76,14 +76,25 @@ def ensure_fzf():
     print("fzf installed\n")
 
 
+def dedupe_db(db):
+    # keep only the most recent row per unique content
+    db.execute("""
+        delete from clips where id not in (
+            select max(id) from clips group by content
+        )
+    """)
+    db.commit()
+
+
 def daemon_loop():
     db = get_db()
+    dedupe_db(db)  # clean any existing dupes on startup
     last = None
     while True:
         current = read_clipboard()
-        if current and current != last:
-            if current.strip():
-                # remove existing duplicate so the new copy floats to top
+        if current and current.strip():
+            if current != last:
+                # delete any existing copy of this content, then insert fresh on top
                 db.execute("delete from clips where content = ?", (current,))
                 db.execute(
                     "insert into clips (content, copied_at) values (?, ?)",
@@ -95,7 +106,7 @@ def daemon_loop():
                     (MAX_ENTRIES,)
                 )
                 db.commit()
-            last = current
+                last = current
         time.sleep(POLL_INTERVAL)
 
 
@@ -104,15 +115,15 @@ def start_daemon():
         pid = int(PID_PATH.read_text().strip())
         try:
             os.kill(pid, 0)
-            print(f"daemon already running (pid {pid})")
+            #print(f"daemon already running (pid {pid})")
             return
         except ProcessLookupError:
             PID_PATH.unlink()
 
     pid = os.fork()
     if pid > 0:
-        print(f"clipstack daemon started (pid {pid})")
-        print(f"db: {DB_PATH}")
+        #print(f"clipstack daemon started (pid {pid})")
+        #print(f"db: {DB_PATH}")
         return
 
     # child: detach completely from terminal
@@ -314,6 +325,20 @@ def cmd_clear(args):
     print(f"cleared {count} entries")
 
 
+def cmd_dedup(args):
+    db = get_db()
+    before = db.execute("select count(*) from clips").fetchone()[0]
+    # keep only the most recent id for each unique content
+    db.execute("""
+        delete from clips where id not in (
+            select max(id) from clips group by content
+        )
+    """)
+    db.commit()
+    after = db.execute("select count(*) from clips").fetchone()[0]
+    print(f"removed {before - after} duplicates ({after} entries remaining)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="clipstack",
@@ -344,6 +369,7 @@ def main():
     sub.add_parser("status", help="show daemon status and entry count")
     sub.add_parser("pick",   help="fuzzy search history, preview and copy selection")
     sub.add_parser("clear",  help="wipe all history")
+    sub.add_parser("dedup",  help="remove duplicate entries from existing history")
 
     p_list = sub.add_parser("list", help="show clipboard history with pagination")
     p_list.add_argument("-n",      type=int, metavar="N",    help="number of entries (default 10)")
@@ -366,6 +392,8 @@ def main():
         cmd_pick(args)
     elif args.cmd == "clear":
         cmd_clear(args)
+    elif args.cmd == "dedup":
+        cmd_dedup(args)
     else:
         parser.print_help()
 
