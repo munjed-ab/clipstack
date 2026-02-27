@@ -101,8 +101,8 @@ def daemon_loop():
                     (current, int(time.time()))
                 )
                 db.execute(
-                    "delete from clips where id in "
-                    "(select id from clips order by id desc limit -1 offset ?)",
+                    "delete from clips where id not in "
+                    "(select id from clips order by id desc limit ?)",
                     (MAX_ENTRIES,)
                 )
                 db.commit()
