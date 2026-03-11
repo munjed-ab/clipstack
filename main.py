@@ -28,34 +28,53 @@ def get_db():
     return db
 
 
-def read_clipboard():
-    for cmd in [
-        ["xclip", "-selection", "clipboard", "-o"],
-        ["xsel", "--clipboard", "--output"],
-        ["pbpaste"],
-    ]:
+def _clipboard_cmds():
+    """Return (read_cmd, write_cmd) based on available tools and session type."""
+    session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    wayland = session == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+
+    candidates = []
+    if wayland:
+        candidates = [
+            (["wl-paste"], ["wl-copy"]),
+            (["xclip", "-selection", "clipboard", "-o"], ["xclip", "-selection", "clipboard"]),
+        ]
+    else:
+        candidates = [
+            (["xclip", "-selection", "clipboard", "-o"], ["xclip", "-selection", "clipboard"]),
+            (["xsel", "--clipboard", "--output"],         ["xsel", "--clipboard", "--input"]),
+            (["pbpaste"],                                 ["pbcopy"]),  # macOS
+        ]
+
+    for read_cmd, write_cmd in candidates:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            if r.returncode == 0:
-                return r.stdout
-        except FileNotFoundError:
+            subprocess.run(read_cmd, capture_output=True, check=True)
+            return read_cmd, write_cmd
+        except (FileNotFoundError, subprocess.CalledProcessError):
             continue
-    return None
+    return None, None
+
+
+def read_clipboard():
+    read_cmd, _ = _clipboard_cmds()
+    if not read_cmd:
+        return None
+    r = subprocess.run(read_cmd, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
 
 
 def write_clipboard(text):
-    for cmd in [
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-        ["pbcopy"],
-    ]:
-        try:
-            subprocess.run(cmd, input=text.encode(), check=True)
-            return True
-        except FileNotFoundError:
-            continue
-    return False
-
+    _, write_cmd = _clipboard_cmds()
+    if not write_cmd:
+        return False
+    env = {**os.environ}
+    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        subprocess.run(write_cmd, input=text.encode(), check=True, env=env)
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
 
 def ensure_fzf():
     try:
